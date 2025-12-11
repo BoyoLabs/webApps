@@ -3,11 +3,18 @@
 // PHP BACKEND: FILE I/O API LOGIC (Handles AJAX Requests)
 // =========================================================================
 
-// FIX FOR ANDROID/NO-SHELL: Use sys_get_temp_dir() for a writable location 
-// to avoid strict file permission issues in the web root.
-define('DATA_FILE', sys_get_temp_dir() . '/sightings.txt');
+// --- 0. SESSION & SECURITY SETUP ---
+session_start();
+// NOTE: For better security, replace this with a strong hash stored externally, am not doing this for this app because its not terribly concerned with it here.
+define('APP_PASSWORD', 'chooseapassword'); 
+//NOTE: you do need a second blank file in the same directory named "sightings.txt"
+define('DATA_FILE', __DIR__ . '/sightings.txt');
+// NEW: Mass Delete Password
+define('MASS_DELETE_PASSWORD', 'chooseanotherpassword');
 
 $response = ['status' => 'error', 'message' => 'Invalid Request'];
+$is_authenticated = isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
+
 
 // Check if this script is being called as an API endpoint via AJAX
 if (isset($_GET['action'])) {
@@ -16,88 +23,103 @@ if (isset($_GET['action'])) {
     // Set JSON header immediately
     header('Content-Type: application/json');
 
-    // --- 1. GET ALL SIGHTINGS (READ) ---
-    if ($action === 'get_sightings') {
-        $file_content = @file_get_contents(DATA_FILE) ?: '';
-        $lines = array_filter(explode("\n", $file_content));
-        
-        $sightings = [];
-        foreach ($lines as $line) {
-            $decoded_line = json_decode($line, true);
-            // Only add valid JSON objects
-            if ($decoded_line !== null) {
-                $sightings[] = $decoded_line;
-            }
-        }
-        
-        $response = ['status' => 'success', 'data' => $sightings];
-    } 
-    
-    // --- 2. ADD NEW SIGHTING (WRITE) ---
-    elseif ($action === 'add_sighting' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    // --- NON-PROTECTED ACTIONS (LOGIN/LOGOUT) ---
+    if ($action === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = json_decode(file_get_contents("php://input"), true);
         
-        if (!isset($data['lat']) || !isset($data['lng'])) {
-            $response['message'] = 'Missing coordinates.';
+        if (isset($data['password']) && $data['password'] === APP_PASSWORD) {
+            $_SESSION['logged_in'] = true;
+            $response = ['status' => 'success', 'message' => 'Login successful.'];
         } else {
-            $new_sighting = [
-                'lat' => (float)$data['lat'],
-                'lng' => (float)$data['lng'],
-                'note' => htmlspecialchars(trim($data['note'])),
-                'time' => date('Y-m-d H:i:s') // Used as a unique ID for deletion
-            ];
-            
-            $json_line = json_encode($new_sighting) . "\n";
-            
-            // Append data to the file
-            if (@file_put_contents(DATA_FILE, $json_line, FILE_APPEND | LOCK_EX) !== false) {
-                $response = ['status' => 'success', 'message' => 'Sighting added.'];
-            } else {
-                $response['message'] = 'Critical Server Error: Cannot write to file.';
-            }
+            $response = ['status' => 'error', 'message' => 'Invalid password.'];
         }
+    } elseif ($action === 'logout') {
+        session_unset();
+        session_destroy();
+        $response = ['status' => 'success', 'message' => 'Logged out.'];
     }
 
-    // --- 3. DELETE SIGHTING ---
-    elseif ($action === 'delete_sighting' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-        $data = json_decode(file_get_contents("php://input"), true);
-        
-        if (!isset($data['time'])) {
-            $response['message'] = 'Missing sighting identifier (time).';
-        } else {
-            $delete_time = $data['time'];
+    // --- PROTECTED API ACTIONS ---
+    elseif ($is_authenticated) {
+
+        // --- 1. GET ALL SIGHTINGS (READ) ---
+        if ($action === 'get_sightings') {
+            // Read file content and normalize line endings for safe splitting
+            $file_content = @file_get_contents(DATA_FILE);
             
-            // 1. Read all existing sightings
-            $file_content = @file_get_contents(DATA_FILE) ?: '';
-            $lines = array_filter(explode("\n", $file_content));
-            
-            $new_lines = [];
-            $deleted = false;
-            
-            // 2. Filter out the entry to delete
-            foreach ($lines as $line) {
-                $sighting = json_decode($line, true);
+            // Only process if reading the file was successful
+            if ($file_content !== false) {
+                $file_content = str_replace(["\r\n", "\r"], "\n", $file_content);
+                $lines = array_filter(explode("\n", $file_content));
                 
-                if ($sighting['time'] !== $delete_time) {
-                    $new_lines[] = $line;
-                } else {
-                    $deleted = true;
+                $sightings = [];
+                foreach ($lines as $line) {
+                    $decoded_line = json_decode($line, true);
+                    // Only add valid JSON objects
+                    if ($decoded_line !== null) {
+                        $sightings[] = $decoded_line;
+                    }
                 }
-            }
-            
-            if ($deleted) {
-                // 3. Write the remaining entries back to the file (OVERWRITE)
-                $new_content = implode("\n", $new_lines);
                 
-                if (@file_put_contents(DATA_FILE, $new_content . "\n", LOCK_EX) !== false) {
-                    $response = ['status' => 'success', 'message' => 'Sighting successfully deleted.'];
-                } else {
-                    $response['message'] = 'Critical Server Error: Cannot write to file to complete deletion.';
-                }
+                $response = ['status' => 'success', 'data' => $sightings];
             } else {
-                $response['message'] = 'Error: Sighting not found.';
+                 $response = ['status' => 'error', 'message' => 'Critical Server Error: Cannot read data file.'];
+            }
+        } 
+        
+        // --- 2. ADD NEW SIGHTING (WRITE) ---
+        elseif ($action === 'add_sighting' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            $data = json_decode(file_get_contents("php://input"), true);
+            
+            if (!isset($data['lat']) || !isset($data['lng'])) {
+                $response['message'] = 'Missing coordinates.';
+            } else {
+                $new_sighting = [
+                    'lat' => (float)$data['lat'],
+                    'lng' => (float)$data['lng'],
+                    // Ensure 'note' is set to prevent errors if empty
+                    'note' => htmlspecialchars(trim($data['note'] ?? '')), 
+                    'time' => date('Y-m-d H:i:s') // Used as a unique ID for deletion
+                ];
+                
+                $json_line = json_encode($new_sighting) . "\n";
+                
+                // FIX: Removed LOCK_EX, keeping FILE_APPEND
+                if (@file_put_contents(DATA_FILE, $json_line, FILE_APPEND) !== false) {
+                    $response = ['status' => 'success', 'message' => 'Sighting added.'];
+                } else {
+                    $response['message'] = 'Critical Server Error: Cannot write to file. (Permissions or path issue)';
+                }
             }
         }
+
+        // --- 3. MASS DELETE ALL SIGHTINGS (NEW PROTECTED ACTION) ---
+        elseif ($action === 'mass_delete_sightings' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            $data = json_decode(file_get_contents("php://input"), true);
+
+            if (!isset($data['password']) || $data['password'] !== MASS_DELETE_PASSWORD) {
+                $response = ['status' => 'unauthorized', 'message' => 'Incorrect mass delete password.'];
+            } else {
+                // FIX: Removed LOCK_EX. Overwrite the file with an empty string to clear all data
+                if (@file_put_contents(DATA_FILE, '') !== false) {
+                    $response = ['status' => 'success', 'message' => 'All sightings successfully deleted.'];
+                } else {
+                    $response['message'] = 'Critical Server Error: Cannot clear the data file.';
+                }
+            }
+        }
+        
+        // --- 4. DELETE SIGHTING (OLD - REMOVED FUNCTIONALITY) ---
+        // The `delete_sighting` action is no longer supported by the frontend.
+        /*
+        elseif ($action === 'delete_sighting' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            // ... (original delete logic)
+        }
+        */
+    }
+    // Handle unauthenticated request to a protected endpoint
+    elseif (!$is_authenticated) {
+        $response = ['status' => 'unauthorized', 'message' => 'Authentication required.'];
     }
     
     // Output the JSON response and terminate PHP execution
@@ -111,7 +133,7 @@ if (isset($_GET['action'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deer Sighting and Fishing Reporter</title>
+    <title>Critter Log</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     
@@ -135,6 +157,9 @@ if (isset($_GET['action'])) {
             margin: 0; 
             background-color: var(--color-bg-primary); 
             color: var(--color-text-light);
+            display: flex; /* Setup for login center */
+            flex-direction: column;
+            min-height: 100vh;
         }
         #header {
             text-align: center;
@@ -143,9 +168,10 @@ if (isset($_GET['action'])) {
             border-bottom: 1px solid var(--border-color);
         }
         #map { 
-            height: 70vh; 
+            height: 35vh; 
             width: 100%; 
             border-bottom: 3px solid var(--color-accent); 
+            flex-grow: 1; /* Allow map to take available space */
         }
         #controls { 
             padding: 15px; 
@@ -159,7 +185,7 @@ if (isset($_GET['action'])) {
             margin-bottom: 15px; 
         }
         
-        button, textarea { 
+        button, textarea, input[type="password"] { /* Added password input */
             padding: 12px; 
             border-radius: 6px; 
             border: 1px solid var(--border-color); 
@@ -204,12 +230,98 @@ if (isset($_GET['action'])) {
         }
         .success { background-color: var(--color-success); color: var(--color-bg-primary); }
         .error { background-color: var(--color-error); color: var(--color-text-light); }
+        
+        /* LOGIN PAGE STYLES */
+        .login-container {
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .login-box {
+            background-color: var(--color-bg-secondary);
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.7);
+            max-width: 350px;
+            width: 100%;
+            text-align: center;
+        }
+        .login-box h2 { margin-top: 0; }
+        .login-box button { margin-top: 20px; }
+        .login-box input { margin-bottom: 15px; }
+
     </style>
 </head>
 <body>
 
+<?php if (!$is_authenticated): ?>
+
     <header id="header">
-        <h1>🦌 Area Sighting and 🐟 Fish Map</h1>
+        <h1>Critter Log - Login</h1>
+    </header>
+    <div class="login-container">
+        <div class="login-box">
+            <h2>Access Required</h2>
+            <input type="password" id="loginPassword" placeholder="Enter Password" required>
+            <button onclick="attemptLogin()">Log In</button>
+            <div id="loginStatus" class="status-msg"></div>
+            <p style="margin-top: 20px; font-size: 0.9em; color: #aaa;">An App by Dave of Boyo Labs: for my friends and family :)</p>
+        </div>
+    </div>
+
+    <script>
+        // =========================================================================
+        // JAVASCRIPT FRONTEND: LOGIN LOGIC
+        // =========================================================================
+        const API_URL = '<?php echo basename(__FILE__); ?>'; 
+
+        async function attemptLogin() {
+            const password = document.getElementById('loginPassword').value;
+            const loginStatus = document.getElementById('loginStatus');
+
+            loginStatus.textContent = 'Attempting login...';
+            loginStatus.className = 'status-msg';
+
+            try {
+                const response = await fetch(API_URL + '?action=login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: password })
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    loginStatus.textContent = 'Success! Redirecting...';
+                    loginStatus.className = 'status-msg success';
+                    // Reload page to load the main content now that the session is set
+                    setTimeout(() => window.location.reload(), 500);
+                } else {
+                    loginStatus.textContent = result.message;
+                    loginStatus.className = 'status-msg error';
+                }
+            } catch (error) {
+                loginStatus.textContent = 'Network Error: Could not connect to server.';
+                loginStatus.className = 'status-msg error';
+            }
+        }
+        
+        // Allow pressing Enter to submit
+        document.getElementById('loginPassword').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                attemptLogin();
+            }
+        });
+
+    </script>
+
+<?php else: ?>
+
+    <header id="header">
+        <h1>Critter Log</h1>
     </header>
 
     <div id="map"></div>
@@ -218,6 +330,8 @@ if (isset($_GET['action'])) {
         <div class="flex-container">
             <button onclick="document.getElementById('sightingModal').style.display='block'">Report New Sighting</button>
             <button onclick="loadSightings()">Refresh Map</button>
+            <button onclick="document.getElementById('massDeleteModal').style.display='block'" style="background-color: #8B0000;">Delete All Sightings</button>
+            <button onclick="handleLogout()" style="background-color: var(--color-error);">Log Out</button>
         </div>
         <div id="messageArea" class="status-msg">Map is loading.</div> 
     </div>
@@ -238,6 +352,20 @@ if (isset($_GET['action'])) {
             <div id="modalStatus" class="status-msg"></div>
         </div>
     </div>
+    
+    <div id="massDeleteModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="document.getElementById('massDeleteModal').style.display='none'">&times;</span>
+            <h2>⚠️ CONFIRM DELETE ALL ⚠️</h2>
+            <p>This action will **PERMANENTLY DELETE** every single sighting.</p>
+            <p>Enter the mass delete password to proceed:</p>
+            <input type="password" id="massDeletePassword" placeholder="Mass Delete Password" required>
+            
+            <button style="margin-top: 15px; background-color: var(--color-error);" onclick="massDeleteSightings()">Confirm Delete All</button>
+            <div id="massDeleteStatus" class="status-msg"></div>
+        </div>
+    </div>
+
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         
@@ -301,11 +429,9 @@ if (isset($_GET['action'])) {
                 
                 if (result.status === 'success') {
                     result.data.forEach(sighting => {
-                        // Create the delete button HTML, using the timestamp as the unique identifier
-                        const deleteButtonHtml = `<button onclick="deleteSighting('${sighting.time}')" style="margin-top:5px; background-color:var(--color-error); border:none; color:white; padding:5px; border-radius:3px; cursor:pointer; width:auto;">Delete</button>`;
-                        
+                        // The delete button HTML is now REMOVED
                         L.marker([sighting.lat, sighting.lng]).addTo(map)
-                            .bindPopup(`<b>Spotted: ${new Date(sighting.time).toLocaleString()}</b><br>${sighting.note}${deleteButtonHtml}`);
+                            .bindPopup(`<b>Spotted: ${new Date(sighting.time).toLocaleString()}</b><br>${sighting.note}`);
                     });
                     document.getElementById('messageArea').textContent = `Loaded ${result.data.length} historical sightings.`;
                 } else {
@@ -371,37 +497,74 @@ if (isset($_GET['action'])) {
                 modalStatus.className = 'status-msg error';
             }
         }
+        
+        // 5. Function to Mass Delete All Sightings (NEW)
+        async function massDeleteSightings() {
+            const passwordInput = document.getElementById('massDeletePassword');
+            const password = passwordInput.value;
+            const modalStatus = document.getElementById('massDeleteStatus');
 
-        // 5. Function to Delete a Sighting
-        async function deleteSighting(timeIdentifier) {
-            if (!confirm("Are you sure you want to delete this sighting? This action cannot be undone.")) {
+            if (!password) {
+                modalStatus.textContent = 'Please enter the password.';
+                modalStatus.className = 'status-msg error';
                 return;
             }
+            
+            modalStatus.textContent = 'Deleting all sightings...';
 
             try {
-                const response = await fetch(API_URL + '?action=delete_sighting', {
+                const response = await fetch(API_URL + '?action=mass_delete_sightings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ time: timeIdentifier })
+                    body: JSON.stringify({ password: password })
                 });
 
                 const result = await response.json();
 
                 if (result.status === 'success') {
-                    // Update map status and refresh
-                    document.getElementById('messageArea').textContent = result.message;
-                    document.getElementById('messageArea').className = 'status-msg error'; 
-                    loadSightings(); 
+                    modalStatus.textContent = result.message;
+                    modalStatus.className = 'status-msg success'; 
+                    
+                    passwordInput.value = ''; // Clear password field
+                    
+                    setTimeout(() => {
+                        document.getElementById('massDeleteModal').style.display='none';
+                        loadSightings(); // Refresh map (will be empty)
+                    }, 1500);
                 } else {
-                    alert(`Deletion failed: ${result.message}`);
+                    modalStatus.textContent = `Deletion failed: ${result.message}`;
+                    modalStatus.className = 'status-msg error';
                 }
             } catch (error) {
-                alert("Network error during deletion.");
+                modalStatus.textContent = "Network error during mass deletion.";
+                modalStatus.className = 'status-msg error';
+            }
+        }
+        
+        // 6. Logout function
+        async function handleLogout() {
+            if (!confirm("Are you sure you want to log out?")) {
+                return;
+            }
+            try {
+                const response = await fetch(API_URL + '?action=logout');
+                const result = await response.json(); 
+                
+                if (result.status === 'success') {
+                    window.location.reload(); // Reload to show the login screen
+                } else {
+                    alert(`Logout failed: ${result.message}`);
+                }
+            } catch (error) {
+                alert("Network error during logout.");
             }
         }
         
         window.onload = loadSightings;
 
     </script>
+    
+<?php endif; ?>
+
 </body>
 </html>
