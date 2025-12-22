@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro Web Amp</title>
+    <style>
+        :root {
+            --winamp-bg: #c0c0c0;
+            --winamp-dark: #404040;
+            --winamp-blue: #000080;
+            --screen-bg: #000000;
+        }
+
+        body {
+            background-color: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Tahoma', sans-serif;
+        }
+
+        /* Main Chassis */
+        .player-frame {
+            background-color: var(--winamp-bg);
+            border: 3px outset #fff;
+            padding: 10px;
+            width: 480px;
+            box-shadow: 8px 8px 15px rgba(0,0,0,0.5);
+        }
+
+        /* Title Bar */
+        .title-bar {
+            background: linear-gradient(90deg, var(--winamp-blue), #0080ff);
+            color: white;
+            padding: 3px 8px;
+            font-size: 12px;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            cursor: default;
+        }
+
+        /* The Visualizer Screen */
+        .display-area {
+            background-color: var(--screen-bg);
+            border: 3px inset #888;
+            height: 180px;
+            margin-bottom: 12px;
+            position: relative;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Control Panel */
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .btn-mode {
+            background: #222;
+            color: #39ff14;
+            border: 2px outset #666;
+            padding: 5px;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-mode:active {
+            border-style: inset;
+        }
+
+        .input-row {
+            display: flex;
+            gap: 5px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            background: #fff;
+            border: 2px inset #fff;
+            padding: 4px;
+            font-size: 12px;
+        }
+
+        .win-button {
+            background: var(--winamp-bg);
+            border: 2px outset #fff;
+            padding: 4px 12px;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .win-button:active {
+            border-style: inset;
+        }
+
+        input[type="file"] {
+            font-size: 11px;
+        }
+
+        audio {
+            width: 100%;
+            height: 30px;
+            margin-top: 5px;
+            filter: grayscale(1) contrast(1.5);
+        }
+
+        .label-text {
+            font-size: 10px;
+            color: #333;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+<div class="player-frame">
+    <div class="title-bar">
+        <span>WEB AMP - VISUALIZER</span>
+        <span>_ □ X</span>
+    </div>
+
+    <div class="display-area">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div class="controls">
+        <button class="btn-mode" id="modeBtn">MODE: WINAMP BARS</button>
+        
+        <div class="label-text">Load Audio URL</div>
+        <div class="input-row">
+            <input type="text" id="urlInput" placeholder="http://server.com/music.mp3">
+            <button class="win-button" id="loadBtn">LOAD</button>
+        </div>
+
+        <div class="label-text">Local File</div>
+        <input type="file" id="fileInput" accept="audio/*">
+        
+        <audio id="audio" controls crossorigin="anonymous"></audio>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const audio = document.getElementById('audio');
+    const modeBtn = document.getElementById('modeBtn');
+
+    let audioContext, analyzer, source, dataArray;
+    let peaks = []; // For the peak-drop effect
+    let currentMode = 0;
+    const modes = ['BARS', 'OSCILLOSCOPE', 'FIRE', 'CIRCULAR'];
+
+    // Setup Canvas Resolution
+    function resize() {
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function initAudio() {
+        if (audioContext) return;
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyzer = audioContext.createAnalyser();
+        source = audioContext.createMediaElementSource(audio);
+        source.connect(analyzer);
+        analyzer.connect(audioContext.destination);
+        analyzer.fftSize = 256;
+        
+        const bufferLength = analyzer.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
+        peaks = new Array(bufferLength).fill(0);
+        
+        render();
+    }
+
+    function render() {
+        requestAnimationFrame(render);
+        
+        const bufferLength = analyzer.frequencyBinCount;
+        if (modes[currentMode] === 'OSCILLOSCOPE') {
+            analyzer.getByteTimeDomainData(dataArray);
+        } else {
+            analyzer.getByteFrequencyData(dataArray);
+        }
+
+        // Draw background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'; // Trail effect
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const mode = modes[currentMode];
+
+        if (mode === 'BARS' || mode === 'FIRE') {
+            drawBars(mode);
+        } else if (mode === 'OSCILLOSCOPE') {
+            drawOscilloscope();
+        } else if (mode === 'CIRCULAR') {
+            drawCircular();
+        }
+    }
+
+    function drawBars(type) {
+        const barWidth = (canvas.width / dataArray.length) * 2.5;
+        let x = 0;
+
+        for (let i = 0; i < dataArray.length; i++) {
+            let h = (dataArray[i] / 255) * canvas.height;
+
+            // Update Peak Drop
+            if (h >= peaks[i]) {
+                peaks[i] = h;
+            } else {
+                peaks[i] -= 1.5; // Gravity speed
+            }
+
+            // Bar Color
+            if (type === 'BARS') {
+                ctx.fillStyle = `hsl(${i * 4}, 100%, 50%)`;
+            } else {
+                let grad = ctx.createLinearGradient(0, canvas.height, 0, canvas.height - h);
+                grad.addColorStop(0, "red");
+                grad.addColorStop(0.5, "orange");
+                grad.addColorStop(1, "yellow");
+                ctx.fillStyle = grad;
+            }
+
+            // Draw Bar
+            ctx.fillRect(x, canvas.height - h, barWidth - 2, h);
+
+            // Draw Peak Line (Winamp Style)
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(x, canvas.height - peaks[i] - 2, barWidth - 2, 2);
+
+            x += barWidth;
+        }
+    }
+
+    function drawOscilloscope() {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#00ff00';
+        ctx.beginPath();
+        let sliceWidth = canvas.width / dataArray.length;
+        let x = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+            let v = dataArray[i] / 128.0;
+            let y = v * canvas.height / 2;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            x += sliceWidth;
+        }
+        ctx.stroke();
+    }
+
+    function drawCircular() {
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        for (let i = 0; i < dataArray.length; i++) {
+            let h = (dataArray[i] / 255) * 80;
+            let angle = (i / dataArray.length) * Math.PI * 2;
+            ctx.strokeStyle = `hsl(${i * 5}, 100%, 50%)`;
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.lineTo(centerX + Math.cos(angle) * (50 + h), centerY + Math.sin(angle) * (50 + h));
+            ctx.stroke();
+        }
+    }
+
+    // UI Listeners
+    modeBtn.addEventListener('click', () => {
+        currentMode = (currentMode + 1) % modes.length;
+        modeBtn.innerText = `MODE: ${modes[currentMode]}`;
+    });
+
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        initAudio();
+        const file = e.target.files[0];
+        audio.src = URL.createObjectURL(file);
+        audio.play();
+    });
+
+    document.getElementById('loadBtn').addEventListener('click', function() {
+        const url = document.getElementById('urlInput').value;
+        if (url) {
+            initAudio();
+            audio.src = url;
+            audio.play();
+        }
+    });
+
+    audio.onplay = () => initAudio();
+</script>
+</body>
+</html>
