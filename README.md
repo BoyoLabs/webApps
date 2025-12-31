@@ -6,7 +6,7 @@ This repo is dedicated to my single page web apps, programming and other scripti
 
 ## APPS LIST
 
-## danikaBday.html
+### danikaBday.html
 * another birthday blast
 * github.io link: https://boyolabs.github.io/main-dev/danikaBday.html
 
